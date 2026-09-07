@@ -75,3 +75,39 @@ FP8（`float8_e4m3fn`）本意是把矩阵乘搬到 FP8 tensor core 上、换取
 - `torch.compile` 是单方案收益最大者（max-autotune 1.88×），且与 SDPA 叠加后效果进一步提升。
 - 该网络为显存带宽受限：CUDA Graph（1.01×）与 FP8（0.71×~1.60×）几乎无益甚至变慢，
   收益主要来自 kernel 融合与消除中间张量物化，而非降低 matmul 精度或减少 launch 次数。
+
+## 5. 当前性能瓶颈
+
+用 `nsys profile` 采集最优组合（SDPA + torch.compile(max-autotune) + channels_last，RTX 4090，
+warmup 5 / iterations 30，mean 11.84 ms），再经 `nsys stats --report cuda_gpu_kern_sum` 汇总
+CUDA kernel 时间，瓶颈分布如下：
+
+| 算子类别 | 占 GPU 时间 | 说明 |
+|---------|-----------:|------|
+| **卷积（合计）** | **~64%** | 见下拆解 |
+| ├ ConvTranspose2d（`conv_last` 上采样，cuDNN dgrad 路径） | ~48% | 最大单项 |
+| ├ Conv2d（`conv_color`/`conv_gbuffer` 下采样+特征，fprop） | ~13% | |
+| └ 布局转换（foldedNhwc↔Nhwc / padding / convertTensor） | ~2% | channels_last 相关 |
+| **FlashAttention（SDPA）** | **12.7%** | 单 kernel 最大项，已由 SDPA 融合 |
+| **Linear（addmm / addmm+gelu）** | ~12% | 6 层 ×（Q/K/V/proj + fc1/fc2） |
+| **LayerNorm（+残差 add）** | ~6.5% | |
+| 其他（残差 add、elementwise 等） | ~5% | |
+
+关键结论：
+
+1. **卷积是当前最大瓶颈，尤其是最后的转置卷积（`conv_last` 上采样）**：其 cuDNN dgrad 路径
+   （`cutlass_tensorop_*_dgrad` / `xmma_*_dgrad`）被拆成大量 tile 不同的子 kernel，
+   合计约 48%，再加上下采样卷积约 13%，卷积总共吃掉约 64% 的 GPU 时间。
+
+2. **注意力不再是瓶颈**：加入 SDPA 后，原来的 QK^T + softmax + A·V 三组小 kernel 被融合成
+   单个 `pytorch_flash::flash_fwd_kernel`，占 12.7%（单 kernel 最大，但已是融合后的结果）。
+
+3. **这解释了 FP8 为何无益**：FP8 只量化了 Linear（~12%），而最大的瓶颈卷积（~64%）根本没被
+   FP8 覆盖（卷积仍走 fp16 cuDNN）；FP8 的 tensor core 加速只作用在一个小份额上，还引入量化开销。
+
+4. **也解释了 channels_last 为何有效**：它让卷积走 cuDNN 的 NHWC 高效 kernel，直接命中最大瓶颈。
+
+后续优化方向（在不改网络结构的前提下）：把注意力放到卷积上——例如对 `conv_last` 的转置卷积与
+下采样卷积做更激进的算子融合/专用 kernel（TensorRT 等），或做 fp8/INT8 卷积量化，收益会远大于
+继续优化注意力或 Linear。
+
