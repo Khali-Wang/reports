@@ -9,10 +9,10 @@ RTX4090，基准（baseline）为 fp16 eager（27.857 ms）。加速比 = 基准
 | baseline：compile reduce-overhead | 16.422 | 60.89 | 1.70× | 36.2 |
 | baseline：compile max-autotune | 14.836 | 67.40 | 1.88× | 36.2 |
 | 方案一：SDPA 融合注意力 | 23.706 | 42.18 | 1.18× | 522.6 |
-| 方案三：CUDA Graph 捕获 | 27.653 | 36.16 | 1.01× | 791.0 |
-| 方案四：FP8 量化（eager） | 39.507 | 25.31 | 0.71× | 775.2 |
+| 方案二：CUDA Graph 捕获 | 27.653 | 36.16 | 1.01× | 791.0 |
+| 方案三：FP8 量化（eager） | 39.507 | 25.31 | 0.71× | 775.2 |
 | 方案四：FP8 + SDPA | 35.260 | 28.36 | 0.79× | 585.3 |
-| 方案四：FP8 + compile reduce-overhead | 17.385 | 57.52 | 1.60× | 36.7 |
+| 方案五：FP8 + compile reduce-overhead | 17.385 | 57.52 | 1.60× | 36.7 |
 | **组合最优**：SDPA + compile(max-autotune) + channels_last | **11.802** | **84.73** | **2.36×** | 36.2 |
 
 
