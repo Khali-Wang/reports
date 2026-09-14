@@ -68,26 +68,6 @@ RTX4090，基准（baseline）为 fp16 eager（27.857 ms）。加速比 = 基准
 
 ## 2. 网络一次 forward 的执行过程
 
-```text
-TbrColor_1 ─┬─ cat+pad → color(6ch) ── conv_color: Conv2d(6→96,k4,s2)+LeakyReLU ─ 0.171 ms ─┐
-TbrColor_3 ─┘                                                                               │
-Albedo ──────┬─ cat+pad → gbuffer(6ch) ─ conv_gbuffer: 同上 ────────────────── 0.194 ms ─┐  │
-Normal ──────┘                                                                           │  │
-                                                                                         ▼  ▼
-                                  ┌────────── GBufferTransformerBlock × 6 ───────────┐
-        color ─→ norm1 ─→ window_partition → V ┐                  （数值为每层 GPU busy 均值）
-        gbuffer → norm1 → window_partition → Q,K├→ sdpa(flash) 1.080 ★ → attn_out 0.224
-                                               │        → (⊕ color + attention)
-                                               └→ norm2 0.072 → mlp(fc1→GELU→fc2) 0.455
-                                                        → (⊕ color + mlp_out)
-        norm1 0.242 · window_partition 0.299 · qkv 0.442（ms/层）；gbuffer 不更新，逐层复用
-                                  └──────────────────────────────────────────────────┘
-                                                         ▼
-             upsample: ConvTranspose2d(96→48,k4,s2)+LeakyReLU+Conv2d(48→3,k3) → 720×1280×3 ─ 1.547 ms
-                                                         ▼
-                        output = TbrColor_1 + residual ─ 0.035 ms ──→ 输出 B×3×720×1280
-```
-
 输入 4 张 `B×3×720×1280`（TbrColor_1 / TbrColor_3 / Albedo / Normal）。一次前向按顺序经过
 以下阶段（括弧内为 NVTX range 名与**每次 forward 的 GPU busy 均值**，来自运行 B 的稳态统计）：
 
